@@ -1,0 +1,4 @@
+pyhttpx_pro/
+├── pyhttpx.py          # Main tool with colors and banner
+├── requirements.txt    # Dependencies
+└── README.md          # Comprehensive documentation
