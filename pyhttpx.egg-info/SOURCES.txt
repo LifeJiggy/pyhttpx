@@ -1,0 +1,14 @@
+CONTRIBUTING.md
+LICENSE
+MANIFEST.in
+README.md
+pyhttpx.py
+requirements.txt
+setup.py
+pyhttpx.egg-info/PKG-INFO
+pyhttpx.egg-info/SOURCES.txt
+pyhttpx.egg-info/dependency_links.txt
+pyhttpx.egg-info/entry_points.txt
+pyhttpx.egg-info/not-zip-safe
+pyhttpx.egg-info/requires.txt
+pyhttpx.egg-info/top_level.txt
