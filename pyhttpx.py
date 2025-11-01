@@ -18,6 +18,7 @@ import json
 import re
 import sys
 import time
+import socket
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, urljoin
 
@@ -32,7 +33,8 @@ init(autoreset=True)
 
 def print_banner():
     """Print the colorful banner"""
-    banner = f"""
+    try:
+        banner = f"""
 {Fore.CYAN}{'='*60}
 {Style.BRIGHT}{Fore.MAGENTA}        _____ _   _ _____ _____ _   _ _____ _____
 {Style.BRIGHT}{Fore.MAGENTA}       |  _  | | | |_   _|  _  | | | |_   _|  _  |
@@ -41,7 +43,7 @@ def print_banner():
 {Style.BRIGHT}{Fore.MAGENTA}       | |_| | | | |_| |_| |_| |_| |_| |_| |_| |
 {Style.BRIGHT}{Fore.MAGENTA}       |_____| |_| |_____|_____| |_| |_____|_____|
 {Fore.CYAN}{'='*60}
-{Style.BRIGHT}{Fore.YELLOW}                    HTTP Probing Tool v5.0
+{Style.BRIGHT}{Fore.YELLOW}                    HTTP Probing Tool v5.0.0
 {Style.BRIGHT}{Fore.GREEN}                Author: ArkhAngelLifeJiggy
 {Style.BRIGHT}{Fore.BLUE}        Inspired by httpx & httprobe | Fast & Reliable
 {Fore.CYAN}{'='*60}
@@ -54,7 +56,32 @@ def print_banner():
 {Style.BRIGHT}{Fore.GREEN}• {Fore.WHITE}Rate limiting and timeout configuration
 {Fore.CYAN}{'='*60}
 """
-    print(banner)
+        print(banner)
+    except UnicodeEncodeError:
+        # Fallback for systems that don't support Unicode
+        simple_banner = """
+============================================================
+        _____ _   _ _____ _____ _   _ _____ _____
+       |  _  | | | |_   _|  _  | | | |_   _|  _  |
+       | | | | |_| | | | | | | | | | | | | | | | |
+       | | | |  _  | | | | | | | | | | | | | | | |
+       | |_| | | | |_| |_| |_| |_| |_| |_| |_| |
+       |_____| |_| |_____|_____| |_| |_____|_____|
+============================================================
+                    HTTP Probing Tool v5.0.0
+                Author: ArkhAngelLifeJiggy
+        Inspired by httpx & httprobe | Fast & Reliable
+============================================================
+Features:
+• Fast HTTP/HTTPS probing with concurrency
+• Multiple probes (status, title, content-length, etc.)
+• Custom ports, headers, and user agents
+• JSON, CSV, and colored text output
+• Proxy support and SSL verification control
+• Rate limiting and timeout configuration
+============================================================
+"""
+        print(simple_banner)
 
 
 class ProbeResult:
@@ -117,31 +144,56 @@ class HTTPProber:
     """Main HTTP probing class"""
 
     def __init__(self, args: argparse.Namespace):
-        self.args = args
-        self.session = requests.Session()
-        self.session.timeout = args.timeout
-        # Allow at least 1 redirect for HTTPS fallback, but respect user setting
-        min_redirects = 1 if not args.follow_redirects else args.max_redirects
-        self.session.max_redirects = min_redirects
+        try:
+            self.args = args
+            # Optimize session configuration for performance
+            self.session = requests.Session()
 
-        # Configure headers
-        headers = {
-            'User-Agent': args.user_agent or 'pyhttpx/1.0',
-            'Connection': 'close'
-        }
-        if args.header:
-            for header in args.header:
-                key, value = header.split(':', 1)
-                headers[key.strip()] = value.strip()
-        self.session.headers.update(headers)
+            # Connection pooling for better performance
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=args.threads,
+                pool_maxsize=args.threads * 2,
+                max_retries=0,  # We handle retries ourselves
+                pool_block=False
+            )
+            self.session.mount('http://', adapter)
+            self.session.mount('https://', adapter)
 
-        # Configure proxies
-        if args.proxy:
-            self.session.proxies = {'http': args.proxy, 'https': args.proxy}
+            self.session.timeout = args.timeout
+            # Allow at least 1 redirect for HTTPS fallback, but respect user setting
+            min_redirects = 1 if not args.follow_redirects else args.max_redirects
+            self.session.max_redirects = min_redirects
 
-        # Disable SSL verification if requested
-        if args.insecure:
-            self.session.verify = False
+            # Configure headers
+            headers = {
+                'User-Agent': args.user_agent or 'pyhttpx/5.0.0',
+                'Connection': 'keep-alive',  # Changed to keep-alive for connection reuse
+                'Accept': '*/*',
+                'Accept-Encoding': 'gzip, deflate',
+                'Accept-Language': 'en-US,en;q=0.9'
+            }
+            if args.header:
+                for header in args.header:
+                    try:
+                        key, value = header.split(':', 1)
+                        headers[key.strip()] = value.strip()
+                    except ValueError:
+                        print(f"{Fore.YELLOW}[!] Warning: Invalid header format '{header}', skipping{Style.RESET_ALL}")
+            self.session.headers.update(headers)
+
+            # Configure proxies
+            if args.proxy:
+                self.session.proxies = {'http': args.proxy, 'https': args.proxy}
+
+            # Disable SSL verification if requested
+            if args.insecure:
+                self.session.verify = False
+                # Suppress SSL warnings
+                import urllib3
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize HTTP prober: {str(e)}")
 
     def probe_url(self, url: str) -> ProbeResult:
         """Probe a single URL and return results"""
@@ -158,56 +210,144 @@ class HTTPProber:
             result.location = response.headers.get('Location', '')
             result.probe_status = True
 
-            # Parse title
-            if 'text/html' in result.content_type:
+            # Parse title with error handling
+            if 'text/html' in result.content_type.lower():
                 try:
                     text = response.content.decode(response.encoding or 'utf-8', errors='ignore')
                     soup = BeautifulSoup(text, 'html.parser')
                     title_tag = soup.find('title')
                     if title_tag:
                         result.title = title_tag.get_text().strip()
-                except:
+                except Exception as e:
+                    # Silently handle title parsing errors
                     pass
 
-            # Calculate hashes
+            # Calculate hashes with error handling
             if self.args.hash:
-                import hashlib
-                if 'md5' in self.args.hash:
-                    result.body_hash = hashlib.md5(response.content).hexdigest()
-                if 'sha256' in self.args.hash:
-                    result.body_hash = hashlib.sha256(response.content).hexdigest()
-
-            # Favicon hash
-            if self.args.favicon:
-                favicon_url = urljoin(url, '/favicon.ico')
                 try:
-                    favicon_response = self.session.get(favicon_url)
-                    if favicon_response.status_code == 200:
-                        result.favicon_hash = mmh3.hash(favicon_response.content)
-                except:
+                    import hashlib
+                    if 'md5' in self.args.hash:
+                        result.body_hash = hashlib.md5(response.content).hexdigest()
+                    if 'sha256' in self.args.hash:
+                        result.body_hash = hashlib.sha256(response.content).hexdigest()
+                except Exception as e:
+                    # Silently handle hash calculation errors
                     pass
 
-            # Line and word count
-            if self.args.line_count or self.args.word_count:
-                text = response.text
-                result.line_count = len(text.splitlines())
-                result.word_count = len(text.split())
+            # Favicon hash with comprehensive error handling
+            if self.args.favicon:
+                try:
+                    favicon_url = urljoin(url, '/favicon.ico')
+                    favicon_response = self.session.get(favicon_url, timeout=5)
+                    if favicon_response.status_code == 200 and favicon_response.content:
+                        result.favicon_hash = mmh3.hash(favicon_response.content)
+                except Exception as e:
+                    # Silently handle favicon errors
+                    pass
 
+            # Get IP address with error handling
+            if self.args.ip:
+                try:
+                    parsed_url = urlparse(url)
+                    hostname = parsed_url.hostname
+                    if hostname:
+                        result.ip = socket.gethostbyname(hostname)
+                except Exception as e:
+                    # Silently handle DNS resolution errors
+                    pass
+
+            # Line and word count with error handling
+            if self.args.line_count or self.args.word_count:
+                try:
+                    text = response.text
+                    result.line_count = len(text.splitlines())
+                    result.word_count = len(text.split())
+                except Exception as e:
+                    # Silently handle text processing errors
+                    pass
+
+        except requests.exceptions.Timeout:
+            result.error = "Request timeout"
+            result.response_time = time.time() - start_time
+        except requests.exceptions.ConnectionError:
+            result.error = "Connection failed"
+            result.response_time = time.time() - start_time
+        except requests.exceptions.TooManyRedirects:
+            result.error = "Too many redirects"
+            result.response_time = time.time() - start_time
         except requests.exceptions.RequestException as e:
-            result.error = str(e)
+            result.error = f"Request error: {str(e)}"
+            result.response_time = time.time() - start_time
+        except Exception as e:
+            result.error = f"Unexpected error: {str(e)}"
             result.response_time = time.time() - start_time
 
         return result
 
     def probe_targets(self, targets: List[str]) -> List[ProbeResult]:
-        """Probe multiple targets with concurrency"""
+        """Probe multiple targets with concurrency, rate limiting, and error handling"""
         results = []
+        rate_limiter = None
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.args.threads) as executor:
-            future_to_url = {executor.submit(self.probe_url, target): target for target in targets}
-            for future in concurrent.futures.as_completed(future_to_url):
-                result = future.result()
-                results.append(result)
+        # Setup rate limiting if specified
+        if hasattr(self.args, 'rate_limit') and self.args.rate_limit:
+            try:
+                import time
+                rate_limiter = {'last_request': 0, 'interval': 1.0 / self.args.rate_limit}
+            except Exception:
+                pass
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.args.threads) as executor:
+                future_to_url = {executor.submit(self.probe_url, target): target for target in targets}
+                for future in concurrent.futures.as_completed(future_to_url):
+                    try:
+                        # Apply rate limiting if configured
+                        if rate_limiter:
+                            current_time = time.time()
+                            time_since_last = current_time - rate_limiter['last_request']
+                            if time_since_last < rate_limiter['interval']:
+                                time.sleep(rate_limiter['interval'] - time_since_last)
+                            rate_limiter['last_request'] = time.time()
+
+                        # Apply delay between requests if specified
+                        if hasattr(self.args, 'delay') and self.args.delay > 0:
+                            time.sleep(self.args.delay)
+
+                        result = future.result(timeout=30)  # Add timeout for individual futures
+                        results.append(result)
+                    except concurrent.futures.TimeoutError:
+                        target_url = future_to_url[future]
+                        error_result = ProbeResult(target_url)
+                        error_result.error = "Probe timeout"
+                        results.append(error_result)
+                    except Exception as e:
+                        target_url = future_to_url[future]
+                        error_result = ProbeResult(target_url)
+                        error_result.error = f"Probe failed: {str(e)}"
+                        results.append(error_result)
+        except Exception as e:
+            # Fallback to sequential processing if threading fails
+            print(f"{Fore.YELLOW}[!] Threading failed, falling back to sequential processing: {str(e)}{Style.RESET_ALL}")
+            for target in targets:
+                try:
+                    # Apply rate limiting for sequential mode too
+                    if rate_limiter:
+                        current_time = time.time()
+                        time_since_last = current_time - rate_limiter['last_request']
+                        if time_since_last < rate_limiter['interval']:
+                            time.sleep(rate_limiter['interval'] - time_since_last)
+                        rate_limiter['last_request'] = time.time()
+
+                    if hasattr(self.args, 'delay') and self.args.delay > 0:
+                        time.sleep(self.args.delay)
+
+                    result = self.probe_url(target)
+                    results.append(result)
+                except Exception as e:
+                    error_result = ProbeResult(target)
+                    error_result.error = f"Sequential probe failed: {str(e)}"
+                    results.append(error_result)
 
         return results
 
@@ -246,8 +386,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('-user-agent', help='Custom User-Agent string')
 
     # Performance options
-    parser.add_argument('-t', '--threads', type=int, default=50, help='Number of threads')
+    parser.add_argument('-t', '--threads', type=int, default=50, help='Number of threads (default: 50)')
     parser.add_argument('-rl', '--rate-limit', type=int, help='Rate limit requests per second')
+    parser.add_argument('-delay', type=float, default=0, help='Delay between requests in seconds (default: 0)')
 
     # Output options
     parser.add_argument('-o', '--output', help='Output file')
@@ -260,15 +401,29 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def get_targets(args: argparse.Namespace) -> List[str]:
-    """Get list of targets from arguments or stdin"""
+    """Get list of targets from arguments or stdin with comprehensive error handling"""
     targets = []
 
-    if args.target:
-        targets.extend(args.target)
+    try:
+        if args.target:
+            targets.extend(args.target)
+    except Exception as e:
+        print(f"{Fore.RED}[-] Error processing target arguments: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
+        return []
 
-    if args.list:
-        with open(args.list, 'r') as f:
-            targets.extend(line.strip() for line in f if line.strip())
+    try:
+        if args.list:
+            with open(args.list, 'r', encoding='utf-8', errors='ignore') as f:
+                targets.extend(line.strip() for line in f if line.strip())
+    except FileNotFoundError:
+        print(f"{Fore.RED}[-] Target list file not found: {args.list}{Style.RESET_ALL}", file=sys.stderr)
+        return []
+    except PermissionError:
+        print(f"{Fore.RED}[-] Permission denied reading target list: {args.list}{Style.RESET_ALL}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"{Fore.RED}[-] Error reading target list: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
+        return []
 
     if not targets:
         try:
@@ -277,123 +432,161 @@ def get_targets(args: argparse.Namespace) -> List[str]:
                 stdin_data = sys.stdin.read().strip()
                 if stdin_data:
                     targets.extend(line.strip() for line in stdin_data.split('\n') if line.strip())
-        except:
-            pass
+        except Exception as e:
+            print(f"{Fore.YELLOW}[!] Warning: Could not read from stdin: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
 
     # Generate URLs with different schemes and ports
     urls = []
-    for target in targets:
-        if '://' not in target:
-            # Add http and https for each port
-            for port in args.ports:
-                if port == '443':
-                    urls.append(f'https://{target}')
-                elif port == '80':
-                    urls.append(f'http://{target}')
+    try:
+        for target in targets:
+            try:
+                if '://' not in target:
+                    # Add http and https for each port
+                    for port in args.ports:
+                        if port == '443':
+                            urls.append(f'https://{target}')
+                        elif port == '80':
+                            urls.append(f'http://{target}')
+                        else:
+                            urls.append(f'http://{target}:{port}')
+                            urls.append(f'https://{target}:{port}')
                 else:
-                    urls.append(f'http://{target}:{port}')
-                    urls.append(f'https://{target}:{port}')
-        else:
-            urls.append(target)
+                    urls.append(target)
+            except Exception as e:
+                print(f"{Fore.YELLOW}[!] Warning: Could not process target '{target}': {str(e)}{Style.RESET_ALL}", file=sys.stderr)
+    except Exception as e:
+        print(f"{Fore.RED}[-] Error generating URLs: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
+        return []
 
     return urls
 
 
 def output_results(results: List[ProbeResult], args: argparse.Namespace):
-    """Output results in specified format"""
-    if args.json:
-        for result in results:
-            if result.probe_status or args.verbose:
-                print(json.dumps(result.to_dict()))
-    elif args.csv:
-        if results:
-            writer = csv.DictWriter(sys.stdout, fieldnames=results[0].to_dict().keys())
-            writer.writeheader()
+    """Output results in specified format with error handling"""
+    try:
+        if args.json:
             for result in results:
                 if result.probe_status or args.verbose:
-                    writer.writerow(result.to_dict())
-    else:
-        # Default colored text output
-        for result in results:
-            if result.probe_status:
-                # Color code based on status
-                if result.status_code and 200 <= result.status_code < 300:
-                    status_color = Fore.GREEN
-                elif result.status_code and 300 <= result.status_code < 400:
-                    status_color = Fore.YELLOW
-                elif result.status_code and 400 <= result.status_code < 500:
-                    status_color = Fore.RED
-                elif result.status_code and 500 <= result.status_code < 600:
-                    status_color = Fore.MAGENTA
-                else:
-                    status_color = Fore.WHITE
+                    try:
+                        print(json.dumps(result.to_dict(), ensure_ascii=False))
+                    except Exception as e:
+                        print(f"{Fore.RED}[-] Error outputting JSON for {result.url}: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
+        elif args.csv:
+            if results:
+                try:
+                    writer = csv.DictWriter(sys.stdout, fieldnames=results[0].to_dict().keys())
+                    writer.writeheader()
+                    for result in results:
+                        if result.probe_status or args.verbose:
+                            try:
+                                writer.writerow(result.to_dict())
+                            except Exception as e:
+                                print(f"{Fore.RED}[-] Error writing CSV row for {result.url}: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
+                except Exception as e:
+                    print(f"{Fore.RED}[-] Error creating CSV output: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
+        else:
+            # Default colored text output
+            for result in results:
+                try:
+                    if result.probe_status:
+                        # Color code based on status
+                        if result.status_code and 200 <= result.status_code < 300:
+                            status_color = Fore.GREEN
+                        elif result.status_code and 300 <= result.status_code < 400:
+                            status_color = Fore.YELLOW
+                        elif result.status_code and 400 <= result.status_code < 500:
+                            status_color = Fore.RED
+                        elif result.status_code and 500 <= result.status_code < 600:
+                            status_color = Fore.MAGENTA
+                        else:
+                            status_color = Fore.WHITE
 
-                output = f"{Fore.CYAN}{result.url}{Style.RESET_ALL}"
+                        output = f"{Fore.CYAN}{result.url}{Style.RESET_ALL}"
 
-                if args.status_code and result.status_code:
-                    output += f" {status_color}[{result.status_code}]{Style.RESET_ALL}"
+                        if args.status_code and result.status_code:
+                            output += f" {status_color}[{result.status_code}]{Style.RESET_ALL}"
 
-                if args.content_length and result.content_length:
-                    output += f" {Fore.BLUE}[{result.content_length}]{Style.RESET_ALL}"
+                        if args.content_length and result.content_length:
+                            output += f" {Fore.BLUE}[{result.content_length}]{Style.RESET_ALL}"
 
-                if args.title and result.title:
-                    # Truncate long titles
-                    title = result.title[:50] + "..." if len(result.title) > 50 else result.title
-                    output += f" {Fore.MAGENTA}[{title}]{Style.RESET_ALL}"
+                        if args.title and result.title:
+                            # Truncate long titles
+                            title = result.title[:50] + "..." if len(result.title) > 50 else result.title
+                            output += f" {Fore.MAGENTA}[{title}]{Style.RESET_ALL}"
 
-                if args.server and result.server:
-                    output += f" {Fore.YELLOW}[{result.server}]{Style.RESET_ALL}"
+                        if args.server and result.server:
+                            output += f" {Fore.YELLOW}[{result.server}]{Style.RESET_ALL}"
 
-                if args.response_time and result.response_time:
-                    # Color response time based on speed
-                    if result.response_time < 1:
-                        time_color = Fore.GREEN
-                    elif result.response_time < 3:
-                        time_color = Fore.YELLOW
-                    else:
-                        time_color = Fore.RED
-                    output += f" {time_color}[{result.response_time:.2f}s]{Style.RESET_ALL}"
+                        if args.response_time and result.response_time:
+                            # Color response time based on speed
+                            if result.response_time < 1:
+                                time_color = Fore.GREEN
+                            elif result.response_time < 3:
+                                time_color = Fore.YELLOW
+                            else:
+                                time_color = Fore.RED
+                            output += f" {time_color}[{result.response_time:.2f}s]{Style.RESET_ALL}"
 
-                print(output)
-            elif args.verbose and result.error:
-                print(f"{Fore.CYAN}{result.url}{Style.RESET_ALL} {Fore.RED}[ERROR: {result.error}]{Style.RESET_ALL}")
+                        print(output)
+                    elif args.verbose and result.error:
+                        print(f"{Fore.CYAN}{result.url}{Style.RESET_ALL} {Fore.RED}[ERROR: {result.error}]{Style.RESET_ALL}")
+                except Exception as e:
+                    print(f"{Fore.RED}[-] Error displaying result for {result.url}: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
+    except Exception as e:
+        print(f"{Fore.RED}[-] Fatal error in output: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
 
 
 def main():
-    # Print banner unless silent mode
-    args = parse_arguments()
-    if not hasattr(args, 'silent') or not args.silent:
-        print_banner()
+    """Main function with comprehensive error handling"""
+    try:
+        # Print banner unless silent mode
+        args = parse_arguments()
+        if not hasattr(args, 'silent') or not args.silent:
+            print_banner()
 
-    targets = get_targets(args)
+        targets = get_targets(args)
 
-    if not targets:
-        print(f"{Fore.RED}[-] No targets specified. Use -u, -l, or pipe targets to stdin.{Style.RESET_ALL}", file=sys.stderr)
+        if not targets:
+            print(f"{Fore.RED}[-] No targets specified. Use -u, -l, or pipe targets to stdin.{Style.RESET_ALL}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"{Fore.BLUE}[+] Starting probe of {len(targets)} targets with {args.threads} threads...{Style.RESET_ALL}")
+
+        start_time = time.time()
+        prober = HTTPProber(args)
+        results = prober.probe_targets(targets)
+        end_time = time.time()
+
+        successful_probes = sum(1 for r in results if r.probe_status)
+        print(f"{Fore.GREEN}[+] Completed in {end_time - start_time:.2f}s - {successful_probes}/{len(results)} targets responded{Style.RESET_ALL}")
+
+        if args.output:
+            try:
+                print(f"{Fore.BLUE}[+] Saving results to {args.output}...{Style.RESET_ALL}")
+                with open(args.output, 'w', encoding='utf-8') as f:
+                    if args.json:
+                        for result in results:
+                            f.write(json.dumps(result.to_dict(), ensure_ascii=False) + '\n')
+                    else:
+                        for result in results:
+                            if result.probe_status:
+                                f.write(result.url + '\n')
+                print(f"{Fore.GREEN}[+] Results saved successfully!{Style.RESET_ALL}")
+            except PermissionError:
+                print(f"{Fore.RED}[-] Permission denied writing to {args.output}{Style.RESET_ALL}", file=sys.stderr)
+                sys.exit(1)
+            except Exception as e:
+                print(f"{Fore.RED}[-] Error saving results: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            output_results(results, args)
+
+    except KeyboardInterrupt:
+        print(f"\n{Fore.YELLOW}[!] Operation cancelled by user{Style.RESET_ALL}", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"{Fore.RED}[-] Fatal error: {str(e)}{Style.RESET_ALL}", file=sys.stderr)
         sys.exit(1)
-
-    print(f"{Fore.BLUE}[+] Starting probe of {len(targets)} targets with {args.threads} threads...{Style.RESET_ALL}")
-
-    start_time = time.time()
-    prober = HTTPProber(args)
-    results = prober.probe_targets(targets)
-    end_time = time.time()
-
-    successful_probes = sum(1 for r in results if r.probe_status)
-    print(f"{Fore.GREEN}[+] Completed in {end_time - start_time:.2f}s - {successful_probes}/{len(results)} targets responded{Style.RESET_ALL}")
-
-    if args.output:
-        print(f"{Fore.BLUE}[+] Saving results to {args.output}...{Style.RESET_ALL}")
-        with open(args.output, 'w') as f:
-            if args.json:
-                for result in results:
-                    f.write(json.dumps(result.to_dict()) + '\n')
-            else:
-                for result in results:
-                    if result.probe_status:
-                        f.write(result.url + '\n')
-        print(f"{Fore.GREEN}[+] Results saved successfully!{Style.RESET_ALL}")
-    else:
-        output_results(results, args)
 
 
 if __name__ == '__main__':

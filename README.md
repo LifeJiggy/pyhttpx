@@ -1,10 +1,12 @@
-# 🔍 pyhttpx
+# pyhttpx
 
-A fast and multi-purpose HTTP toolkit written in Python, inspired by [httpx](https://github.com/projectdiscovery/httpx) and [httprobe](https://github.com/tomnomnom/httprobe).
+[![PyPI](https://img.shields.io/pypi/v/pyhttpx.svg)](https://pypi.org/project/pyhttpx/)
+[![Python](https://img.shields.io/pypi/pyversions/pyhttpx.svg)](https://pypi.org/project/pyhttpx/)
+[![Downloads](https://img.shields.io/pypi/dm/pyhttpx.svg)](https://pypi.org/project/pyhttpx/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-5.0.0-orange.svg)](https://github.com/LifeJiggy/pyhttpx)
 
-![Python](https://img.shields.io/badge/python-3.6+-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Version](https://img.shields.io/badge/version-1.0-orange.svg)
+A fast and multi-purpose HTTP toolkit written in Python, inspired by [httpx](https://github.com/projectdiscovery/httpx) and [httprobe](https://github.com/tomnomnom/httprobe). Designed for security researchers, penetration testers, and developers who need to quickly probe and analyze web endpoints.
 
 ## ✨ Features
 
@@ -21,21 +23,34 @@ A fast and multi-purpose HTTP toolkit written in Python, inspired by [httpx](htt
 
 ### Prerequisites
 - Python 3.6 or higher
+- pip package manager
+
+### Install from PyPI (Recommended)
+```bash
+pip install pyhttpx
+```
 
 ### Install from source
 ```bash
-git clone https://github.com/yourusername/pyhttpx.git
+git clone https://github.com/LifeJiggy/pyhttpx.git
 cd pyhttpx
 pip install -r requirements.txt
 ```
 
-### Direct usage
+### Direct usage (Development)
 ```bash
 # Install dependencies
 pip install requests beautifulsoup4 mmh3 colorama
 
 # Run the tool
 python pyhttpx.py -u example.com
+```
+
+### Verify Installation
+```bash
+pyhttpx --help
+# or
+python -c "import pyhttpx; print('pyhttpx installed successfully!')"
 ```
 
 ## 🚀 Usage
